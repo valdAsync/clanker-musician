@@ -1,0 +1,10 @@
+# Build output
+/clanker-musician
+*.test
+*.out
+
+# Rendered audio from tests (CLANKER_WAV)
+*.wav
+
+# macOS
+.DS_Store
