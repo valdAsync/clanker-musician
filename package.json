@@ -1,0 +1,15 @@
+{
+  "name": "pi-clanker-musician",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Night-shift camera feed and a synthwave soundtrack that follows the agent, in a pi side column",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./pi/clanker/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

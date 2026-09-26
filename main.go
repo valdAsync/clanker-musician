@@ -62,21 +62,26 @@ type beatMsg struct {
 type model struct {
 	msgs <-chan tea.Msg
 
-	logs       []textMsg
-	beatStep   int
-	beats      int
-	night      int     // completed nights
-	drain      float64 // power used tonight, in percent
-	lastNote   int
-	stepNote   int
-	chord      string
-	section    string
-	energy     float64
-	audioLevel float64
-	width      int
-	height     int
-	agentState EventType
-	viz        vizEngine
+	logs     []textMsg
+	beatStep int
+	beats    int
+	night    int     // completed nights
+	drain    float64 // power used tonight, in percent
+	lastNote int
+	stepNote int
+	chord    string
+	section  string
+	energy   float64
+	panel    bool // drawing the tall side-column layout for pi
+	// contextPower, when set, replaces the night's drain: pi reports how much
+	// of the context window is left.
+	contextPower    float64
+	hasContextPower bool
+	audioLevel      float64
+	width           int
+	height          int
+	agentState      EventType
+	viz             vizEngine
 }
 
 var (
@@ -114,7 +119,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.width > 0 {
-			w, h := vizSize(m.width, m.height)
+			w, h := m.vizDims()
 			m.viz.relayout(w, h)
 		}
 
@@ -125,6 +130,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case textMsg:
 		m.agentState = msg.event
 		m.lastNote = msg.note
+		m.viz.cue() // a new lead note moves to the next camera
 		if msg.event == EvtError {
 			m.drain += 1.5
 		}
@@ -263,6 +269,9 @@ func (m model) sectionView() string {
 }
 
 func (m model) power() float64 {
+	if m.hasContextPower {
+		return clamp(m.contextPower, 0, 100)
+	}
 	return clamp(100-m.drain, 1, 100)
 }
 
@@ -437,7 +446,7 @@ func (m *model) advanceViz() {
 	if m.width == 0 {
 		return
 	}
-	w, h := vizSize(m.width, m.height)
+	w, h := m.vizDims()
 	chaos := 0
 	switch m.agentState {
 	case EvtToolCall:
@@ -467,24 +476,68 @@ func (m model) visibleLogs(width int) []string {
 	return out
 }
 
-func main() {
+// vizDims is the size of the camera feed for the current layout.
+func (m model) vizDims() (int, int) {
+	if m.panel {
+		return panelVizSize(m.width, m.height)
+	}
+	return vizSize(m.width, m.height)
+}
+
+// startAudio opens the sound device and starts the synth playing. Keep the
+// returned player referenced for as long as audio should play.
+func startAudio() (*Synth, *Sequencer, *oto.Player, error) {
 	ctx, ready, err := oto.NewContext(&oto.NewContextOptions{
 		SampleRate:   sampleRate,
 		ChannelCount: 1,
 		Format:       oto.FormatSignedInt16LE,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "audio: %v\n", err)
-		os.Exit(1)
+		return nil, nil, nil, fmt.Errorf("audio: %w", err)
 	}
 	<-ready
 
 	synth := newSynth(sampleRate)
 	seq := newSequencer(synth)
-
 	player := ctx.NewPlayer(synth)
-	defer player.Close()
 	player.Play()
+	return synth, seq, player, nil
+}
+
+// runBeats steps the sequencer forever and reports each step. A slow reader
+// misses beats rather than stalling the music.
+func runBeats(seq *Sequencer, synth *Synth, out chan<- tea.Msg) {
+	ticker := time.NewTicker(stepLength)
+	defer ticker.Stop()
+
+	step := 0
+	for range ticker.C {
+		b := seq.step(step)
+
+		select {
+		case out <- beatMsg{step: step, level: synth.Level(), note: b.note, chord: b.chord, section: b.section, energy: b.energy}:
+		default:
+		}
+
+		step = (step + 1) % stepCount
+	}
+}
+
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "engine" {
+		if err := runEngine(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "engine: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	synth, seq, player, err := startAudio()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer player.Close()
 
 	msgs := make(chan tea.Msg, 16)
 
@@ -497,22 +550,7 @@ func main() {
 	restoreEcho := silenceEcho()
 	defer restoreEcho()
 
-	go func() {
-		ticker := time.NewTicker(stepLength)
-		defer ticker.Stop()
-
-		step := 0
-		for range ticker.C {
-			b := seq.step(step)
-
-			select {
-			case msgs <- beatMsg{step: step, level: synth.Level(), note: b.note, chord: b.chord, section: b.section, energy: b.energy}:
-			default:
-			}
-
-			step = (step + 1) % stepCount
-		}
-	}()
+	go runBeats(seq, synth, msgs)
 
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)

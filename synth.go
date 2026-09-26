@@ -306,6 +306,7 @@ type Synth struct {
 	delay      []float64
 	delayIndex int
 	level      float64
+	muted      bool // keeps playing silently, so the visuals still follow the music
 
 	mu sync.Mutex
 }
@@ -352,7 +353,10 @@ func (s *Synth) Read(buf []byte) (int, error) {
 			peak = abs
 		}
 
-		sample := int16(math.Tanh(mix*0.9) * 0.22 * math.MaxInt16)
+		var sample int16
+		if !s.muted {
+			sample = int16(math.Tanh(mix*0.9) * 0.22 * math.MaxInt16)
+		}
 		buf[2*i] = byte(sample)
 		buf[2*i+1] = byte(sample >> 8)
 	}
@@ -433,6 +437,12 @@ func (s *Synth) setChord(c chord) {
 	s.mu.Lock()
 	s.pad.notes = c.pad
 	s.pad.amp *= 0.5 // dip and swell back in, so each change breathes
+	s.mu.Unlock()
+}
+
+func (s *Synth) setMuted(on bool) {
+	s.mu.Lock()
+	s.muted = on
 	s.mu.Unlock()
 }
 
@@ -547,6 +557,14 @@ func (q *Sequencer) record(line string, evt EventType) int {
 		q.synth.triggerLead(freq, evt == EvtError, 1)
 	}
 	return idx
+}
+
+// settle tells the arrangement the agent has stopped: no more thinking bells or
+// tool-call hats; the energy then drains on its own.
+func (q *Sequencer) settle() {
+	q.mu.Lock()
+	q.current = EvtOutput
+	q.mu.Unlock()
 }
 
 // step plays one sixteenth.

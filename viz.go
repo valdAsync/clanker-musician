@@ -17,6 +17,18 @@ import (
 
 const vizTickEvery = 50 * time.Millisecond
 
+// Cameras change when the agent plays a new lead note, but a camera stays up
+// at least vizMinHold so bursts of events don't strobe, and with no events it
+// drifts to the next one after vizDriftMin..vizDriftMax. All in 50 ms frames.
+const (
+	vizMinHold  = 80  // 4 s
+	vizDriftMin = 300 // 15 s
+	vizDriftMax = 500 // 25 s
+)
+
+// cue asks for the next camera; it cuts once the current one has had its time.
+func (e *vizEngine) cue() { e.cued = true }
+
 const (
 	vizSpectrum = iota
 	vizScope
@@ -111,7 +123,9 @@ type vizEngine struct {
 	w, h  int
 
 	mode, prevMode                     int
-	hold                               int
+	hold                               int  // frames left before an idle drift to the next camera
+	shown                              int  // frames the current camera has been on screen
+	cued                               bool // a new lead note asked for the next camera
 	blend, blendMax                    int
 	wipe                               float64
 	wipeKind                           int
@@ -189,7 +203,7 @@ func (e *vizEngine) relayout(w, h int) {
 	e.resize(w, h)
 	if !e.ready {
 		e.ready = true
-		e.hold = 40
+		e.hold = vizDriftMin
 		e.lastStep = -1
 		e.mode = rand.Intn(vizModeCount)
 		e.prevMode = e.mode
@@ -233,17 +247,14 @@ func (e *vizEngine) tick(w, h, step int, level float64, chaos int) {
 			if len(e.rings) > 8 {
 				e.rings = e.rings[len(e.rings)-8:]
 			}
-			// Downbeats sometimes cut the preset short, like hitting randomize.
-			if rand.Float64() < 0.12+float64(chaos)*0.1 {
-				e.hold = 0
-			}
 		}
 	} else if e.kick {
 		e.kickAge++
 	}
 
 	e.hold--
-	if e.hold <= 0 {
+	e.shown++
+	if e.hold <= 0 || (e.cued && e.shown >= vizMinHold) {
 		e.switchMode()
 	} else if e.frame%22 == 0 && e.blend == 0 {
 		// Same plugin, new knobs. Keeps a mode from looping one formula.
@@ -295,7 +306,8 @@ func (e *vizEngine) switchMode() {
 	if rand.Float64() < 0.4 {
 		e.wipeKind = rand.Intn(wipeSnow)
 	}
-	e.hold = 28 + rand.Intn(50) // ~1.4–4s at 20fps
+	e.hold = vizDriftMin + rand.Intn(vizDriftMax-vizDriftMin)
+	e.shown, e.cued = 0, false
 	e.retune(true)
 	e.palPick()
 }
@@ -624,9 +636,24 @@ func (e *vizEngine) drawFire(g []vcell) {
 	}
 }
 
+// Terminal cells are about twice as tall as they are wide.
+const cellAspect = 2.0
+
+// unit is how many columns make 1.0 in feed coordinates: half the feed's longer
+// side, measured in columns. Both axes share it, so circles stay round whether
+// the feed is the wide full screen or pi's tall column.
+func (e *vizEngine) unit() float64 {
+	return math.Max(float64(e.w), float64(e.h)*cellAspect) / 2
+}
+
+// norm maps a cell to centred feed coordinates on that shared scale.
+func (e *vizEngine) norm(x, y int) (float64, float64) {
+	u := e.unit()
+	return (float64(x) - float64(e.w)/2) / u, (float64(y) - float64(e.h)/2) * cellAspect / u
+}
+
 func (e *vizEngine) drawField(g []vcell, spiral, moire bool) {
 	w, h := e.w, e.h
-	cx, cy := float64(w)/2, float64(h)/2
 	ff := float64(e.frame)
 	en := e.energy()
 	shades := []rune(" .:-=+*#%@█")
@@ -635,8 +662,7 @@ func (e *vizEngine) drawField(g []vcell, spiral, moire bool) {
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			dx := (float64(x) - cx) / (float64(w) * 0.5)
-			dy := (float64(y) - cy) / (float64(h) * 0.5) * 0.55
+			dx, dy := e.norm(x, y)
 			if e.mirror > 0.5 {
 				dx, dy = math.Abs(dx), math.Abs(dy)
 			}
@@ -676,15 +702,13 @@ func (e *vizEngine) drawField(g []vcell, spiral, moire bool) {
 
 func (e *vizEngine) drawTunnel(g []vcell, kaleido bool) {
 	w, h := e.w, e.h
-	cx, cy := float64(w)/2, float64(h)/2
 	ff := float64(e.frame)
 	en := e.energy()
 	shades := []rune(" ░▒▓█")
 	folds := 3.0 + math.Floor(e.p4*4)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			dx := (float64(x) - cx) / (float64(w) * 0.5)
-			dy := (float64(y) - cy) / (float64(h) * 0.5) * 0.62
+			dx, dy := e.norm(x, y)
 			a := math.Atan2(dy, dx)
 			r := math.Hypot(dx, dy)
 			if kaleido {
@@ -749,8 +773,9 @@ func (e *vizEngine) drawStars(g []vcell) {
 		if s.z < 0.05 {
 			continue
 		}
-		px := cx + s.x/s.z*float64(w)*0.38
-		py := cy + s.y/s.z*float64(h)*0.85
+		spread := e.unit() * 0.76
+		px := cx + s.x/s.z*spread
+		py := cy + s.y/s.z*spread/cellAspect
 		col, row := int(px), int(py)
 		b := 1 - s.z
 		ch := '·'
@@ -818,17 +843,18 @@ func (e *vizEngine) drawRings(g []vcell) {
 			e.set(g, i, n%h, '·', n%12)
 		}
 	}
+	u := e.unit()
 	for _, rg := range e.rings {
 		ci := rg.ci
 		for x := 0; x < w; x++ {
-			dx := (float64(x) - cx) / (float64(w) * 0.5)
+			dx := (float64(x) - cx) / u
 			// solve dy from radius, two branches
 			rad := rg.r
 			inner := rad*rad - dx*dx
 			if inner < 0 {
 				continue
 			}
-			dy := math.Sqrt(inner) / 0.62 * (float64(h) * 0.5)
+			dy := math.Sqrt(inner) * u / cellAspect // in rows
 			e.set(g, x, int(cy-dy), '*', ci)
 			e.set(g, x, int(cy+dy), 'o', (ci+6)%12)
 		}
