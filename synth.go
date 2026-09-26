@@ -35,14 +35,6 @@ type chord struct {
 	pad  [3]float64
 }
 
-// progression is the synthwave staple i–VI–III–VII in A minor, one bar each.
-var progression = []chord{
-	{"Am", 55.00, [3]float64{220.00, 261.63, 329.63}},
-	{"F", 43.65, [3]float64{220.00, 261.63, 349.23}},
-	{"C", 65.41, [3]float64{196.00, 261.63, 329.63}},
-	{"G", 49.00, [3]float64{196.00, 246.94, 293.66}},
-}
-
 func noteFor(line string) (float64, int) {
 	hash := 0
 	for _, b := range []byte(line) {
@@ -98,6 +90,12 @@ func (o *osc) pulse(freq, width float64) float64 {
 	return s
 }
 
+func (o *osc) triangle(freq float64) float64 {
+	s := 4*math.Abs(o.phase-0.5) - 1
+	o.advance(freq / sampleRate)
+	return s
+}
+
 func (o *osc) sine(freq float64) float64 {
 	s := math.Sin(2 * math.Pi * o.phase)
 	o.advance(freq / sampleRate)
@@ -118,14 +116,17 @@ func (f *svf) run(in, cutoff, damp float64) (low, high float64) {
 
 // --- VOICES ---
 
-// lead is two detuned saws through a plucked low-pass: the synthwave lead.
+// lead plays the agent's notes through a plucked low-pass. The patch picks its
+// wave: detuned saws (the synthwave lead), a square, or a glassy FM bell.
 // Errors swap it for a hollow square.
 type lead struct {
 	a, b     osc
 	filt     svf
 	freq     float64
 	amp, env float64
+	detune   float64 // how far apart the two saws sit; set per phrase
 	square   bool
+	tone     leadTone
 }
 
 func (v *lead) next(sweep float64) float64 {
@@ -133,12 +134,23 @@ func (v *lead) next(sweep float64) float64 {
 		return 0
 	}
 	var s float64
-	if v.square {
-		s = v.a.pulse(v.freq, 0.5) * 0.7
-	} else {
-		s = (v.a.saw(v.freq*1.006) + v.b.saw(v.freq*0.994)) * 0.5
+	switch {
+	case v.square:
+		width := 0.5
+		if v.tone.wave == waveSquare {
+			width = 0.15 // still sounds wrong next to the patch's own square
+		}
+		s = v.a.pulse(v.freq, width) * 0.7
+	case v.tone.wave == waveSquare:
+		s = v.a.pulse(v.freq, 0.5) * 0.42
+	case v.tone.wave == waveBell:
+		mod := v.b.sine(v.freq * 2)
+		s = math.Sin(2*math.Pi*v.a.phase+(1.2+3*v.env)*mod) * 0.55
+		v.a.advance(v.freq / sampleRate)
+	default:
+		s = (v.a.saw(v.freq*(1+v.detune)) + v.b.saw(v.freq*(1-v.detune))) * 0.5
 	}
-	out, _ := v.filt.run(s, 500+sweep*1800+v.env*2600, 0.8)
+	out, _ := v.filt.run(s, v.tone.cutoff+sweep*1800+v.env*v.tone.env, 0.8)
 	out *= v.amp
 	v.amp *= leadDecay
 	v.env *= leadEnvDecay
@@ -146,23 +158,22 @@ func (v *lead) next(sweep float64) float64 {
 }
 
 // arp is the chiptune bit: a 25% pulse flicking through chord tones every
-// 50 ms, like a console faking a chord on one channel.
+// few tens of milliseconds, like a console faking a chord on one channel.
 type arp struct {
 	o     osc
-	notes [4]float64
+	notes []float64
+	tick  int // samples per note
 	idx   int
 	left  int
 	amp   float64
 }
 
-const arpTick = sampleRate / 20
-
 func (v *arp) next() float64 {
-	if v.amp < 1e-4 {
+	if v.amp < 1e-4 || len(v.notes) == 0 {
 		return 0
 	}
 	if v.left <= 0 {
-		v.left = arpTick
+		v.left = v.tick
 		v.idx = (v.idx + 1) % len(v.notes)
 	}
 	v.left--
@@ -171,45 +182,86 @@ func (v *arp) next() float64 {
 	return s
 }
 
-// bass is a plucked saw with a sine under it, the filter opening with the sweep.
+// bass is a plucked oscillator with a sine under it, the filter opening with
+// the sweep. The patch picks saw, square or reese; a low damp makes it acid.
 type bass struct {
-	o, sub   osc
-	filt     svf
-	freq     float64
-	amp, env float64
+	o, o2, sub      osc
+	filt            svf
+	freq            float64
+	amp, env        float64
+	tone            bassTone
+	decay, envDecay float64 // per-sample multipliers from the tone
 }
 
 func (v *bass) next(sweep float64) float64 {
 	if v.amp < 1e-4 {
 		return 0
 	}
-	s := v.o.saw(v.freq)*0.7 + v.sub.sine(v.freq)*0.6
-	out, _ := v.filt.run(s, 220+sweep*500+v.env*900, 0.7)
+	var s float64
+	switch v.tone.wave {
+	case waveSquare:
+		s = v.o.pulse(v.freq, 0.5) * 0.28
+	case waveReese:
+		s = (v.o.saw(v.freq*1.008) + v.o2.saw(v.freq*0.992)) * 0.4
+	default:
+		s = v.o.saw(v.freq) * 0.7
+	}
+	s += v.sub.sine(v.freq) * v.tone.sub
+	out, _ := v.filt.run(s, v.tone.cutoff+sweep*500+v.env*v.tone.env, v.tone.damp)
 	out *= v.amp
-	v.amp *= bassDecay
-	v.env *= bassEnvDecay
+	v.amp *= v.decay
+	v.env *= v.envDecay
 	return out
 }
 
-// pad holds the chord: six saws, dark and slow, swelling in on each change.
+// pad holds the chord: six detuned oscillators, dark and slow, swelling in on
+// each change. The patch picks saw strings, PWM strings or a soft triangle choir.
 type pad struct {
 	osc   [6]osc
+	lfo   osc // sweeps the pulse width for PWM
 	filt  svf
 	notes [3]float64
 	amp   float64
+	tone  padTone
 }
 
 func (v *pad) next(sweep float64) float64 {
 	if v.notes[0] == 0 {
 		return 0
 	}
+	width := 0.5 + 0.2*v.lfo.sine(0.3)
+	up, down := 1+v.tone.detune, 1-v.tone.detune
 	var s float64
 	for i, n := range v.notes {
-		s += v.osc[2*i].saw(n*1.004) + v.osc[2*i+1].saw(n*0.996)
+		a, b := &v.osc[2*i], &v.osc[2*i+1]
+		switch v.tone.wave {
+		case wavePWM:
+			s += (a.pulse(n*up, width) + b.pulse(n*down, 1-width)) * 0.8
+		case waveTriangle:
+			s += (a.triangle(n*up) + b.triangle(n*down)) * 1.3
+		default:
+			s += a.saw(n*up) + b.saw(n*down)
+		}
 	}
 	v.amp += (1 - v.amp) * padAttack
-	out, _ := v.filt.run(s/6, 450+sweep*1500, 1.1)
+	out, _ := v.filt.run(s/6, v.tone.cutoff+sweep*1500, 1.1)
 	return out * v.amp
+}
+
+// chip is the counter-melody: a short pulse-wave pluck, the 8-bit lead of an
+// old console, with its pulse width chosen per phrase.
+type chip struct {
+	o               osc
+	freq, amp, duty float64
+}
+
+func (v *chip) next() float64 {
+	if v.amp < 1e-4 {
+		return 0
+	}
+	s := v.o.pulse(v.freq, v.duty) * v.amp
+	v.amp *= chipDecay
+	return s
 }
 
 // bell is a soft sine pluck with a glassy overtone, for the thinking arpeggio.
@@ -227,23 +279,31 @@ func (v *bell) next() float64 {
 	return s
 }
 
-// kick is a sine with a fast pitch drop.
+// kick is a sine with a fast pitch drop and an optional click on the attack.
 type kick struct {
-	o         osc
-	amp, bend float64
+	o                osc
+	amp, bend, click float64
+	tone             kickTone
+	decay, bendDecay float64 // per-sample multipliers from the tone
 }
 
 func (v *kick) next() float64 {
 	if v.amp < 1e-4 {
 		return 0
 	}
-	s := v.o.sine(45+120*v.bend) * v.amp
-	v.amp *= kickDecay
-	v.bend *= kickBendDecay
+	s := v.o.sine(v.tone.base+v.tone.depth*v.bend) * v.amp
+	if v.click > 1e-4 {
+		s += (rand.Float64()*2 - 1) * v.click
+		v.click *= clickDecay
+	}
+	v.amp *= v.decay
+	v.bend *= v.bendDecay
 	return s
 }
 
 // noise covers the snare and both hats: filtered noise plus an optional tone.
+// Claps retrigger the noise a few times; a gate cuts the tail short, like an
+// 80s gated reverb snare.
 type noise struct {
 	filt       svf
 	cutoff     float64
@@ -254,11 +314,26 @@ type noise struct {
 	bodyAmp    float64
 	bodyDecay  float64
 	passBright bool // true: high-pass (hats, snare sizzle)
+
+	claps, clapsLeft, clapWait int
+	clapAmp                    float64
+	gate, age                  int // samples; gate 0 = no gate
 }
 
 func (v *noise) next() float64 {
+	if v.clapsLeft > 0 {
+		if v.clapWait--; v.clapWait <= 0 {
+			v.amp = v.clapAmp
+			v.clapsLeft--
+			v.clapWait = clapGap
+		}
+	}
 	if v.amp < 1e-4 && v.bodyAmp < 1e-4 {
 		return 0
+	}
+	if v.age++; v.gate > 0 && v.age > v.gate {
+		v.amp *= gateCut
+		v.bodyAmp *= gateCut
 	}
 	low, high := v.filt.run(rand.Float64()*2-1, v.cutoff, 1)
 	s := low
@@ -275,23 +350,25 @@ func (v *noise) next() float64 {
 }
 
 var (
-	leadDecay     = decayFor(0.4)
-	leadEnvDecay  = decayFor(0.12)
-	arpDecay      = decayFor(0.7)
-	bellDecay     = decayFor(0.6)
-	bassDecay     = decayFor(0.28)
-	bassEnvDecay  = decayFor(0.08)
-	padAttack     = 1 / (0.6 * sampleRate)
-	kickDecay     = decayFor(0.32)
-	kickBendDecay = decayFor(0.05)
-	duckRelease   = decayFor(0.4)
+	leadDecay    = decayFor(0.4)
+	leadEnvDecay = decayFor(0.12)
+	arpDecay     = decayFor(0.7)
+	bellDecay    = decayFor(0.6)
+	chipDecay    = decayFor(0.22)
+	padAttack    = 1 / (0.6 * sampleRate)
+	clickDecay   = decayFor(0.004)
+	gateCut      = decayFor(0.015)
+	duckRelease  = decayFor(0.4)
 )
+
+const clapGap = sampleRate / 100 // 10 ms between clap bursts
 
 // --- SYNTH ---
 
 type Synth struct {
 	lead  lead
 	arp   arp
+	chip  chip
 	bell  bell
 	bass  bass
 	pad   pad
@@ -306,16 +383,34 @@ type Synth struct {
 	delay      []float64
 	delayIndex int
 	level      float64
-	muted      bool // keeps playing silently, so the visuals still follow the music
+	muted      bool    // keeps playing silently, so the visuals still follow the music
+	feedback   float64 // echo feedback, set per phrase
+	patch      patch   // the sound set picked at startup
 
 	mu sync.Mutex
 }
 
+// newSynth starts with a random patch (or CLANKER_PATCH).
 func newSynth(rate float64) *Synth {
-	s := &Synth{delay: make([]float64, int(rate*0.375))} // dotted eighth at 120 BPM
-	s.snare = noise{cutoff: 1500, decay: decayFor(0.25), passBright: true, bodyFreq: 185, bodyDecay: decayFor(0.07)}
-	s.hat = noise{cutoff: 6000, decay: decayFor(0.05), passBright: true}
-	s.ohat = noise{cutoff: 5000, decay: decayFor(0.3), passBright: true}
+	return newSynthPatch(rate, pickPatch(rand.New(rand.NewSource(time.Now().UnixNano()))))
+}
+
+func newSynthPatch(rate float64, p patch) *Synth {
+	s := &Synth{delay: make([]float64, int(rate*0.375)), feedback: 0.4, patch: p} // dotted eighth at 120 BPM
+	s.kick.tone = p.kick
+	s.kick.decay, s.kick.bendDecay = decayFor(p.kick.decay), decayFor(p.kick.bendDecay)
+	s.snare = noise{
+		cutoff: p.snare.cutoff, decay: decayFor(p.snare.decay), passBright: true,
+		bodyFreq: p.snare.body, bodyDecay: decayFor(max(p.snare.bodyDecay, 0.001)),
+		claps: max(p.snare.claps, 1), gate: int(p.snare.gate * sampleRate),
+	}
+	s.hat = noise{cutoff: p.hat.cutoff, decay: decayFor(p.hat.closed), passBright: true}
+	s.ohat = noise{cutoff: p.hat.cutoff * 0.85, decay: decayFor(p.hat.open), passBright: true}
+	s.bass.tone = p.bass
+	s.bass.decay, s.bass.envDecay = decayFor(p.bass.decay), decayFor(p.bass.envDecay)
+	s.pad.tone = p.pad
+	s.lead.tone = p.lead
+	s.lead.detune = 0.006
 	return s
 }
 
@@ -332,17 +427,18 @@ func (s *Synth) Read(buf []byte) (int, error) {
 		lead := s.lead.next(s.sweep) * 0.36
 		arp := s.arp.next() * 0.20
 		bell := s.bell.next() * 0.18
+		chip := s.chip.next() * 0.11
 		snare := s.snare.next() * 0.50
 
 		dry := s.kick.next()*0.95 + snare +
 			s.hat.next()*0.16 + s.ohat.next()*0.13 +
 			(s.bass.next(s.sweep)*0.65+s.pad.next(s.sweep)*0.18)*pump +
-			lead + arp + bell
+			lead + arp + chip + bell
 
 		// Only the melodic parts and the snare go to the echo; kick and bass
 		// stay dry so the low end doesn't turn to mud.
 		delayed := s.delay[s.delayIndex]
-		s.delay[s.delayIndex] = lead + arp + bell + snare*0.35 + delayed*0.4
+		s.delay[s.delayIndex] = lead + arp + chip + bell + snare*0.35 + delayed*s.feedback
 		s.delayIndex++
 		if s.delayIndex == len(s.delay) {
 			s.delayIndex = 0
@@ -385,13 +481,16 @@ func (s *Synth) triggerKick(amp float64) {
 	s.mu.Lock()
 	s.kick.o.phase = 0
 	s.kick.amp, s.kick.bend = amp, 1
+	s.kick.click = s.kick.tone.click * amp
 	s.duck = amp
 	s.mu.Unlock()
 }
 
 func (s *Synth) triggerSnare(amp float64) {
 	s.mu.Lock()
-	s.snare.amp, s.snare.bodyAmp = amp, amp*0.6
+	s.snare.amp, s.snare.bodyAmp = amp, amp*s.patch.snare.bodyMix
+	s.snare.clapAmp, s.snare.clapsLeft, s.snare.clapWait = amp, s.snare.claps-1, clapGap
+	s.snare.age = 0
 	s.mu.Unlock()
 }
 
@@ -419,10 +518,29 @@ func (s *Synth) triggerBell(freq float64) {
 	s.mu.Unlock()
 }
 
-func (s *Synth) triggerArp(c chord) {
+// triggerArp runs through the chord's tones in the given order, one every tick
+// samples. Degree 3 is the root an octave above the others.
+func (s *Synth) triggerArp(c chord, shape []int, tick int) {
+	notes := make([]float64, len(shape))
+	for i, d := range shape {
+		notes[i] = motifFreq(c, d)
+	}
 	s.mu.Lock()
-	s.arp.notes = [4]float64{c.pad[0] * 2, c.pad[1] * 2, c.pad[2] * 2, c.pad[0] * 4}
-	s.arp.idx, s.arp.left, s.arp.amp = 0, arpTick, 1
+	s.arp.notes, s.arp.tick = notes, tick
+	s.arp.idx, s.arp.left, s.arp.amp = 0, tick, 1
+	s.mu.Unlock()
+}
+
+func (s *Synth) triggerChip(freq, duty, amp float64) {
+	s.mu.Lock()
+	s.chip.freq, s.chip.duty, s.chip.amp = freq, duty, amp
+	s.mu.Unlock()
+}
+
+// setTone applies a phrase's lead detune and echo feedback.
+func (s *Synth) setTone(detune, feedback float64) {
+	s.mu.Lock()
+	s.lead.detune, s.feedback = detune, feedback
 	s.mu.Unlock()
 }
 
@@ -502,18 +620,50 @@ type Sequencer struct {
 	dropNext  bool // an error arrived; the next bar is a drop
 	dropping  bool // this bar is the drop
 	current   EventType
+	rng       *rand.Rand // picks phrases; only used with mu held
+	ph        phrase     // what the band plays for the current phrase
+
+	// Phrases follow the agent: a new one only at a phrase boundary after
+	// input, on the slam after an error's drop, or after a long idle.
+	phraseStart int  // bar the current phrase began on
+	phraseTick  int  // step count when it began
+	activity    bool // input arrived during this phrase
 }
 
 func newSequencer(synth *Synth) *Sequencer {
-	q := &Sequencer{synth: synth, bar: -1}
+	return newSequencerRand(synth, rand.New(rand.NewSource(time.Now().UnixNano())))
+}
+
+// newSequencerRand takes the random source, so tests can pin an arrangement.
+func newSequencerRand(synth *Synth, rng *rand.Rand) *Sequencer {
+	q := &Sequencer{synth: synth, bar: -1, rng: rng}
+	q.ph = newPhrase(rng)
 	for i := range q.noteIdx {
 		q.noteIdx[i] = -1
 	}
 	return q
 }
 
+// idleDrift is how long a phrase loops with no input before the band moves on
+// anyway: 32 bars, about a minute.
+const idleDrift = 32 * stepCount
+
+// phrasePos is the bar's position in the current phrase. Call with q.mu held.
+func (q *Sequencer) phrasePos() int {
+	return (max(q.bar, 0) - q.phraseStart) % phraseBars
+}
+
+// chord is the chord of the current bar. Call with q.mu held.
 func (q *Sequencer) chord() chord {
-	return progression[max(q.bar, 0)%len(progression)]
+	return q.ph.prog[q.phrasePos()%len(q.ph.prog)]
+}
+
+// nextPhrase starts a new phrase on the current bar. Call with q.mu held.
+func (q *Sequencer) nextPhrase() {
+	q.ph = newPhrase(q.rng)
+	q.phraseStart = max(q.bar, 0)
+	q.phraseTick = q.ticks
+	q.activity = false
 }
 
 // section names the current layer set. Call with q.mu held.
@@ -539,6 +689,7 @@ func (q *Sequencer) record(line string, evt EventType) int {
 
 	q.mu.Lock()
 	q.current = evt
+	q.activity = true
 	q.energy = math.Min(1, q.energy+energyBump[evt])
 	if evt == EvtError {
 		q.dropNext = true
@@ -548,11 +699,11 @@ func (q *Sequencer) record(line string, evt EventType) int {
 	q.square[q.head] = evt == EvtError
 	q.writtenAt[q.head] = q.ticks
 	q.head = (q.head + 1) % stepCount
-	c := q.chord()
+	c, ph := q.chord(), q.ph
 	q.mu.Unlock()
 
 	if evt == EvtToolCall {
-		q.synth.triggerArp(c)
+		q.synth.triggerArp(c, ph.arpShape, ph.arpTick)
 	} else {
 		q.synth.triggerLead(freq, evt == EvtError, 1)
 	}
@@ -572,15 +723,29 @@ func (q *Sequencer) step(step int) beatInfo {
 	q.mu.Lock()
 	q.ticks++
 	q.energy *= energyDecay
-	slam := false
+	slam, fresh := false, false
 	if step == 0 {
 		q.bar++
 		slam = q.dropping
 		q.dropping = q.dropNext
 		q.dropNext = false
+		switch {
+		case slam:
+			q.nextPhrase() // the beat comes back on a fresh scene
+			fresh = true
+		case q.bar > 0 && q.phrasePos() == 0:
+			if q.activity || q.ticks-q.phraseTick >= idleDrift {
+				q.nextPhrase()
+				fresh = true
+			}
+			// Otherwise nothing happened: loop the same phrase.
+		case q.bar == 0:
+			fresh = true // apply the starting phrase's tone
+		}
 	}
 	bar, e, drop, rolling := q.bar, q.energy, q.dropping, q.dropNext
-	c := q.chord()
+	pos := q.phrasePos()
+	c, ph := q.chord(), q.ph
 	evt := q.current
 	note := q.notes[step]
 	idx := q.noteIdx[step]
@@ -595,10 +760,13 @@ func (q *Sequencer) step(step int) beatInfo {
 
 	if step == 0 {
 		q.synth.setChord(c)
+		if fresh {
+			q.synth.setTone(ph.detune, ph.feedback)
+		}
 	}
 	// The filter breathes over sweepBars; energy decides how far it opens.
-	pos := float64((bar%sweepBars)*stepCount+step) / float64(sweepBars*stepCount)
-	lfo := 0.5 - 0.5*math.Cos(2*math.Pi*pos)
+	sweepPos := float64((bar%sweepBars)*stepCount+step) / float64(sweepBars*stepCount)
+	lfo := 0.5 - 0.5*math.Cos(2*math.Pi*sweepPos)
 	q.synth.setSweep(lfo * (0.3 + 0.7*e))
 
 	if drop {
@@ -606,9 +774,15 @@ func (q *Sequencer) step(step int) beatInfo {
 	}
 
 	work, warm, peak := e >= levelWork, e >= levelWarm, e >= levelPeak
+	drive := math.Min(1, e/levelWork)
 
-	if step%4 == 0 {
-		amp := 0.6 + 0.4*math.Min(1, e/levelWork)
+	// The phrase's last bar ends on a fill, unless an error is rolling into a drop.
+	fill := pos == phraseBars-1 && step >= 12 && !rolling
+	kickDrop := fill && warm && ph.fill == 1
+	snareRun := fill && work && ph.fill == 0
+
+	if k := ph.groove.kick[step]; k > 0 && !kickDrop {
+		amp := (0.6 + 0.4*drive) * k
 		if slam && step == 0 {
 			amp = 1
 		}
@@ -618,8 +792,11 @@ func (q *Sequencer) step(step int) beatInfo {
 		q.synth.triggerHat(1, true)
 	}
 
-	if work && (step == 4 || step == 12) {
-		q.synth.triggerSnare(1)
+	if sn := ph.groove.snare[step]; work && sn > 0 {
+		q.synth.triggerSnare(sn)
+	}
+	if snareRun {
+		q.synth.triggerSnare(0.35 + 0.15*float64(step-12))
 	}
 	if rolling && step >= 13 {
 		q.synth.triggerSnare(0.3 + 0.15*float64(step-13)) // roll into the drop
@@ -628,32 +805,40 @@ func (q *Sequencer) step(step int) beatInfo {
 	switch {
 	case step%4 == 2 && warm:
 		q.synth.triggerHat(0.9, true)
-	case step == 14 && peak:
+	case step == 14 && (peak || kickDrop):
 		q.synth.triggerHat(0.7, true)
-	case step%2 == 1:
-		q.synth.triggerHat(0.3+0.25*math.Min(1, e/levelWork), false)
+	case ph.groove.chats[step] > 0:
+		q.synth.triggerHat(ph.groove.chats[step]*(0.3+0.25*drive), false)
 	case work:
 		q.synth.triggerHat(0.4, false)
 	}
 
-	// Octave-bouncing eighths on the chord root.
-	if warm && step%2 == 0 {
-		f := c.root
-		if step%4 == 2 {
-			f *= 2
+	if warm && !kickDrop {
+		if f := bassFreq(ph.bass, step, c); f > 0 {
+			q.synth.triggerBass(f)
 		}
-		q.synth.triggerBass(f)
+	}
+
+	// The chiptune counter-melody: the hook, then its answer in the second half.
+	if warm && ph.motifOn {
+		motif := ph.motifA
+		if pos >= phraseBars/2 {
+			motif = ph.motifB
+		}
+		if d := motif[step]; d >= 0 {
+			q.synth.triggerChip(motifFreq(c, d), ph.duty, 0.6+0.4*math.Min(1, e/levelPeak))
+		}
 	}
 
 	if peak && step%8 == 0 {
-		q.synth.triggerArp(c)
+		q.synth.triggerArp(c, ph.arpShape, ph.arpTick)
 	}
 	if evt == EvtThinking && step%2 == 0 {
 		// A slow up-and-down through the chord while the agent thinks.
 		q.synth.triggerBell(c.pad[[]int{0, 1, 2, 1}[step/2%4]] * 2)
 	}
 
-	if note > 0 {
+	if note > 0 && ph.mask[step] == 'x' {
 		// Notes play at full strength for a third of their life, then fade.
 		amp := math.Min(1, 1.5-1.5*float64(age)/noteLife)
 		if amp > 0.02 {

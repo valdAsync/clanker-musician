@@ -72,7 +72,8 @@ type model struct {
 	chord    string
 	section  string
 	energy   float64
-	panel    bool // drawing the tall side-column layout for pi
+	panel    bool   // drawing the tall side-column layout for pi
+	patch    string // name of the sound set, shown as the tape's label
 	// contextPower, when set, replaces the night's drain: pi reports how much
 	// of the context window is left.
 	contextPower    float64
@@ -247,7 +248,7 @@ func (m model) clock() string {
 
 func (m model) chordName() string {
 	if m.chord == "" {
-		return progression[0].name
+		return progressions[0][0].name
 	}
 	return m.chord
 }
@@ -373,7 +374,11 @@ func (m model) hud() []string {
 		usage = 4
 	}
 	secs := m.beats * int(stepLength/time.Millisecond) / 1000
-	tape := styleDim.Render("TAPE ") + styleGreen.Render("▶ SP ") +
+	label := m.patch
+	if label == "" {
+		label = "SP"
+	}
+	tape := styleDim.Render("TAPE ") + styleGreen.Render(fmt.Sprintf("▶ %s ", label)) +
 		styleAmber.Render(fmt.Sprintf("%d:%02d:%02d", secs/3600, secs/60%60, secs%60)) +
 		styleDim.Render("  USE ") + pStyle.Render(strings.Repeat("▮", usage)) +
 		styleFaint.Render(strings.Repeat("▯", 4-usage))
@@ -542,7 +547,7 @@ func main() {
 	msgs := make(chan tea.Msg, 16)
 
 	p := tea.NewProgram(
-		model{msgs: msgs, logs: make([]textMsg, 0, 64), lastNote: -1, stepNote: -1},
+		model{msgs: msgs, logs: make([]textMsg, 0, 64), lastNote: -1, stepNote: -1, patch: synth.patch.name},
 		tea.WithAltScreen(),
 		tea.WithInput(nil),
 	)

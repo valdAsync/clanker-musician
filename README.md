@@ -25,6 +25,12 @@ In fullscreen mode the conversation rewraps beside the column. In regular
 mode the column is an overlay on the right edge. It hides below 100 columns.
 Only one session plays at a time.
 
+Each start picks a random sound set (patch), shown as the tape's label:
+NIGHT SHIFT, VHS, WAREHOUSE, ACID, NEON ARCADE or NEON RAIN. Set
+`CLANKER_PATCH=acid` (any patch name, case and spaces ignored) to choose one.
+The arrangement moves to a new phrase only when the agent has done something,
+and holds while it's idle.
+
 The extension builds `./clanker-musician` with Go on first use, and again
 whenever the Go sources are newer. Set `CLANKER_MUSICIAN_BIN` to use a
 different binary.

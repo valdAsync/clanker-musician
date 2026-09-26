@@ -105,7 +105,7 @@ func engineLoop(in io.Reader, w *bufio.Writer, enc *json.Encoder, synth *Synth, 
 		return nil
 	}
 
-	m := model{panel: true, lastNote: -1, stepNote: -1}
+	m := model{panel: true, lastNote: -1, stepNote: -1, patch: synth.patch.name}
 	lastStream := map[EventType]time.Time{}
 	var lastFrame string
 	for {

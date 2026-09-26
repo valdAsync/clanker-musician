@@ -39,6 +39,49 @@ Options if PEAK comes too easily:
 Also check: the fall from PEAK back to IDLE takes about 14 bars (~28 s). If
 that feels too slow, lower `energyDecay` to about 0.985.
 
+## Phrase variation
+
+Every `phraseBars` (8 bars, ~16 s) the band picks a new combination in
+`phrase.go`. Every choice is a list you can extend or reweight:
+
+| Choice | Where | Now |
+|---|---|---|
+| Chord progression | `progressions` | 6, all A minor |
+| Drum groove | `grooves`, odds in `grooveOdds` | four ×3, pickup, rolling ×2, broken, halftime |
+| Bass line | `bassLines` | bounce, rolling, arp, synth, pulse |
+| Lead slots that sound | `leadMasks` | all, 8ths, 3-3-2, syncopated, sparse |
+| Counter-melody | `newMotif`, `motifOn` odds (75%) | 4–7 notes, answered in the second half |
+| Last-bar fill | `phrase.fill` | snare run or kick drop |
+
+Things to judge by ear: whether 8 bars is the right phrase length, whether
+the half-time and broken grooves are too big a break from the techno feel,
+and whether the chip counter-melody (gain 0.11 in `Synth.Read`) is too loud.
+
+## Phrases follow activity
+
+A new phrase is picked at a phrase boundary only if input arrived during the
+phrase (`Sequencer.activity`), on the slam after an error's drop, or after
+`idleDrift` (32 bars, about 1 minute) with no change. Idle sessions loop one
+phrase.
+
+## Patches
+
+`patch.go` holds six sound sets. One is picked per startup, with ±10% nudges
+to decays, filters and detune. Set `CLANKER_PATCH` to pin one while tuning.
+Loudness (RMS, steady WORK) after balancing:
+
+| Patch | kick | snare | bass | pad | lead |
+|---|---|---|---|---|---|
+| NIGHT SHIFT | 0.124 | 0.042 | 0.043 | 0.033 | 0.049 |
+| VHS | 0.170 | 0.055 | 0.051 | 0.033 | 0.048 |
+| WAREHOUSE | 0.103 | 0.047 | 0.071 | 0.045 | 0.050 |
+| ACID | 0.112 | 0.046 | 0.045 | 0.033 | 0.049 |
+| NEON ARCADE | ~0.110 | 0.030 | ~0.080 (sub trimmed after) | 0.045 | 0.049 |
+| NEON RAIN | 0.162 | 0.045 | 0.072 | 0.046 | 0.049 |
+
+To listen: `CLANKER_WAV=/tmp/clanker-patch.wav go test -run TestEveryPatchRendersCleanly`
+writes `/tmp/clanker-patch-<NAME>.wav` for each patch.
+
 ## Other things to judge by ear
 
 - **Bass may be thin on laptop speakers.** The roots sit at A1–C2 (44–65 Hz).
