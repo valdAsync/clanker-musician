@@ -6,8 +6,6 @@ with what the agent is doing.
 
 ![clanker-musician reacting to a pi session](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/demo.gif)
 
-[Full demo video (45 s)](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/intro.mp4) · [Screenshot](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/cover.png) · [Screenshot](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/spectrum.png)
-
 ## In pi (side column)
 
 ```bash
@@ -46,7 +44,7 @@ different binary.
 
 ## Standalone
 
-```
+```bash
 go build -o clanker-musician .
 some-agent | ./clanker-musician
 ```
@@ -61,7 +59,7 @@ lines on stdin and stdout; see `engine.go`.
 
 ## Tests
 
-```
+```bash
 go test -race ./...
 node --test --experimental-strip-types pi/clanker/*.test.ts
 ```
