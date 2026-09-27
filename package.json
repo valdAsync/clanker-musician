@@ -1,12 +1,29 @@
 {
-  "name": "pi-clanker-musician",
-  "private": true,
-  "version": "0.1.0",
-  "description": "Night-shift camera feed and a synthwave soundtrack that follows the agent, in a pi side column",
+  "name": "@valdasync/pi-clanker-musician",
+  "version": "0.0.1",
+  "description": "A night-shift camera feed and a synthwave / minimal-techno soundtrack that follows your agent, in a pi side column",
   "type": "module",
-  "keywords": ["pi-package"],
+  "license": "MIT",
+  "author": "Valdas Čereška",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valdAsync/clanker-musician.git"
+  },
+  "homepage": "https://github.com/valdAsync/clanker-musician#readme",
+  "bugs": "https://github.com/valdAsync/clanker-musician/issues",
+  "keywords": ["pi-package", "pi", "extension", "music", "synthwave", "techno", "visualizer"],
+  "files": [
+    "pi/clanker/index.ts",
+    "pi/clanker/events.ts",
+    "pi/clanker/binary.ts",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
   "pi": {
-    "extensions": ["./pi/clanker/index.ts"]
+    "extensions": ["./pi/clanker/index.ts"],
+    "image": "https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/cover.png",
+    "video": "https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/intro.mp4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

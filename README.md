@@ -4,11 +4,20 @@ A night-shift security monitor for coding agents: a psychedelic, 80s-horror
 camera feed and a synthwave / minimal-techno soundtrack that builds and drops
 with what the agent is doing.
 
+![clanker-musician reacting to a pi session](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/demo.gif)
+
+[Full demo video (45 s)](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/intro.mp4) · [Screenshot](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/cover.png) · [Screenshot](https://raw.githubusercontent.com/valdAsync/clanker-musician/master/assets/spectrum.png)
+
 ## In pi (side column)
 
+```bash
+pi install npm:@valdasync/pi-clanker-musician
+pi --tui-mode fullscreen
 ```
-pi --tui-mode fullscreen --extension ./pi/clanker
-```
+
+Prebuilt engines ship for macOS and Linux (x64 and arm64); Linux needs ALSA
+or PulseAudio. Music plays on the machine pi runs on. From a checkout (needs
+Go), run `pi --tui-mode fullscreen --extension ./pi/clanker` instead.
 
 Then in the chat:
 
@@ -54,7 +63,5 @@ lines on stdin and stdout; see `engine.go`.
 
 ```
 go test -race ./...
-node --test --experimental-strip-types pi/clanker/events.test.ts
+node --test --experimental-strip-types pi/clanker/*.test.ts
 ```
-
-Open tuning questions are in `TUNING.md`.

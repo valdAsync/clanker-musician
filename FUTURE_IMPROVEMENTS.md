@@ -1,6 +1,8 @@
-# Tuning notes
+# Future improvements
 
-Open questions to decide after listening. Nothing here is implemented yet.
+Ideas and open tuning questions, mostly to decide by ear. The sections on
+phrases and patches describe what exists today and the knobs to adjust; the
+rest are not implemented yet.
 
 ## Energy saturates at PEAK on fast streams
 

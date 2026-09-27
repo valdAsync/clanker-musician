@@ -8,3 +8,9 @@
 
 # macOS
 .DS_Store
+
+# npm release packages (scripts/npm-build.mjs)
+/dist/
+
+# Raw screen recordings
+*.mov

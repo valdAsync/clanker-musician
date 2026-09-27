@@ -1,0 +1,46 @@
+name: release
+
+# Push a tag that matches package.json's version to publish, e.g.:
+#   git tag v0.0.1 && git push origin v0.0.1
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # npm provenance: ties each package to this workflow run
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: node --test --experimental-strip-types pi/clanker/*.test.ts
+
+      - name: Build the package with all four engines
+        run: node --experimental-strip-types scripts/npm-build.mjs "$GITHUB_REF_NAME"
+
+      # A version already on npm is skipped, so a failed release can be re-run.
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published"
+          else
+            npm publish dist/npm/package --provenance --access public
+          fi

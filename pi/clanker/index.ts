@@ -19,12 +19,13 @@
  */
 
 import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, HStack, isViewportTUI, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import { locateEngine } from "./binary.ts";
 import { type EngineEvent, type EngineKind, LineBuffer, panelWidth, toolLine } from "./events.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -225,15 +226,28 @@ function newestGoSource(root: string): number {
 	return newest;
 }
 
-/** Finds the engine, building it from this repo when it's missing or stale. */
+/**
+ * Finds the engine: the prebuilt one shipped for this platform, or this repo's
+ * Go source, built when it's missing or stale.
+ */
 async function engineBinary(ctx: ExtensionContext): Promise<string> {
-	const fromEnv = process.env.CLANKER_MUSICIAN_BIN;
-	if (fromEnv) return fromEnv;
+	const loc = locateEngine(REPO_ROOT, process.env, process.platform, process.arch);
+	switch (loc.kind) {
+		case "missing":
+			throw new Error(loc.reason);
+		case "env":
+			return loc.bin;
+		case "prebuilt":
+			try {
+				accessSync(loc.bin, constants.X_OK);
+			} catch {
+				chmodSync(loc.bin, 0o755); // some installs drop the executable bit
+			}
+			return loc.bin;
+	}
 
-	const bin = join(REPO_ROOT, "clanker-musician");
-	const hasSource = existsSync(join(REPO_ROOT, "go.mod"));
-	const stale = hasSource && (!existsSync(bin) || statSync(bin).mtimeMs < newestGoSource(REPO_ROOT));
-	if (!stale) return bin;
+	const bin = loc.bin;
+	if (existsSync(bin) && statSync(bin).mtimeMs >= newestGoSource(REPO_ROOT)) return bin;
 
 	ctx.ui.notify("clanker-musician: building the engine…", "info");
 	await new Promise<void>((resolveBuild, rejectBuild) => {
